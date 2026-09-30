@@ -1,0 +1,173 @@
+{
+ "canvas": [
+  1376,
+  768
+ ],
+ "json_validation": {
+  "bubble_2_future_worry.png": {
+   "json_diff": 1.6411216714364791,
+   "best_dx": 0,
+   "best_dy": 0,
+   "best_diff": 1.6411216714364791
+  },
+  "bubble_3_old_regret.png": {
+   "json_diff": 1.6205289411353787,
+   "best_dx": 0,
+   "best_dy": 0,
+   "best_diff": 1.6205289411353787
+  },
+  "bubble_1_unfinished_today.png": {
+   "json_diff": 1.3865793502296309,
+   "best_dx": 0,
+   "best_dy": 0,
+   "best_diff": 1.3865793502296309
+  },
+  "character.png": {
+   "json_diff": 1.9249406507471023,
+   "best_dx": 0,
+   "best_dy": 0,
+   "best_diff": 1.9249406507471023
+  },
+  "bed.png": {
+   "json": null,
+   "best": [
+    77,
+    426
+   ],
+   "best_diff": 1.3388829106264344
+  }
+ },
+ "bed_png_position": {
+  "x": 77,
+  "y": 426,
+  "w": 529,
+  "h": 333,
+  "note": "layers.json yok; \u015fablon e\u015flemesi (\u00b14 taramas\u0131, ort. fark 1.34)"
+ },
+ "room_lines": {
+  "back_wall": {
+   "left_x": 272.5,
+   "right_x": 1105.5,
+   "top_y": 138.5,
+   "bottom_y": 628
+  },
+  "top_left_diagonal": {
+   "x_at_y0": 50.5,
+   "slope_dx_per_dy": 1.6,
+   "ends_at": [
+    272.5,
+    138.5
+   ]
+  },
+  "top_right_diagonal": {
+   "x_at_y0": 1326.5,
+   "slope_dx_per_dy": -1.6,
+   "ends_at": [
+    1105.5,
+    138.5
+   ]
+  },
+  "bottom_right_diagonal": {
+   "points": [
+    [
+     1193.5,
+     680
+    ],
+    [
+     1224.5,
+     700
+    ],
+    [
+     1256,
+     720
+    ],
+    [
+     1287.5,
+     740
+    ],
+    [
+     1330,
+     767
+    ]
+   ],
+   "starts_near": [
+    1105.5,
+    628
+   ]
+  },
+  "bottom_left_diagonal": {
+   "points": [
+    [
+     35,
+     767
+    ]
+   ],
+   "note": "yatak/g\u00f6lge nedeniyle \u00e7o\u011fu k\u0131s\u0131m \u00f6rt\u00fcl\u00fc; k\u00f6\u015fe (272.5,628)->(35,767) do\u011frusu varsay\u0131m"
+  }
+ },
+ "missing_elements_bbox_x0y0x1y1": {
+  "lamp": [
+   566,
+   0,
+   810,
+   45
+  ],
+  "switch": [
+   1157,
+   232,
+   1188,
+   304
+  ],
+  "pill3": [
+   311,
+   57,
+   509,
+   90
+  ],
+  "pill2": [
+   845,
+   148,
+   1056,
+   189
+  ],
+  "pill1": [
+   1093,
+   444,
+   1328,
+   477
+  ],
+  "trail1_dots": [
+   664,
+   195,
+   829,
+   239
+  ],
+  "trail2_dots": [
+   1035,
+   390,
+   1038,
+   466
+  ],
+  "dots_small": [
+   [
+    608,
+    314,
+    625,
+    319
+   ],
+   [
+    792,
+    403,
+    815,
+    423
+   ],
+   [
+    808,
+    509,
+    825,
+    530
+   ]
+  ],
+  "alpha_ok": null
+ }
+}
