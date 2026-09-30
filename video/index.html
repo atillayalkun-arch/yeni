@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8"><title>Düşünce Odası</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}</style></head>
+<body><canvas id="out" width="1376" height="768"></canvas>
+<script>
+'use strict';
+const W = 1376, H = 768, FPS = 30, DUR = 15, C0 = [W / 2, H / 2];
+const LEVELS = [0, 0.6, 1.2, 2.2, 3.6, 6], PAD = 20, NSUB = 10, DOF_K = 16;
+const RENDER = location.search.includes('render');
+
+// ---------- yardımcılar ----------
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const eOutCubic = t => 1 - Math.pow(1 - clamp(t), 3);
+const eOutBack = (t, s = 2.2) => { t = clamp(t) - 1; return 1 + (s + 1) * t * t * t + s * t * t; };
+const eOutBounce = t => { t = clamp(t); const n = 7.5625, d = 2.75;
+  if (t < 1 / d) return n * t * t; if (t < 2 / d) return n * (t -= 1.5 / d) * t + .75;
+  if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + .9375; return n * (t -= 2.625 / d) * t + .984375; };
+function hash(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+function mk(w, h, rf) { const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d', rf ? { willReadFrequently: true } : {}); return [c, x]; }
+function pchip(xs, ys) {                                  // monoton kübik (Fritsch–Carlson)
+  const n = xs.length, h = [], d = [], m = new Array(n);
+  for (let i = 0; i < n - 1; i++) { h[i] = xs[i + 1] - xs[i]; d[i] = (ys[i + 1] - ys[i]) / h[i]; }
+  m[0] = d[0]; m[n - 1] = d[n - 2];
+  for (let i = 1; i < n - 1; i++) m[i] = d[i - 1] * d[i] <= 0 ? 0 : 2 / (1 / d[i - 1] + 1 / d[i]);
+  return x => { if (x <= xs[0]) return ys[0]; if (x >= xs[n - 1]) return ys[n - 1];
+    let i = 0; while (x > xs[i + 1]) i++;
+    const t = (x - xs[i]) / h[i], t2 = t * t, t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * ys[i] + (t3 - 2 * t2 + t) * h[i] * m[i] + (-2 * t3 + 3 * t2) * ys[i + 1] + (t3 - t2) * h[i] * m[i + 1]; };
+}
+
+// ---------- kamera anahtar kareleri: [zaman, hedefX, hedefY, hedef derinlik, zoom, roll°] ----------
+const KEYS = [
+  [0.0,  688, 384, 0.95, 1.08, -1.2],
+  [2.9,  690, 452, 1.00, 2.00,  0.0],
+  [4.1, 1062, 574, 1.07, 1.70,  0.0],
+  [5.3, 1058, 476, 1.00, 1.55,  0.5],
+  [6.4, 1010, 340, 1.00, 1.62,  0.0],
+  [6.9,  947, 292, 1.07, 1.90,  0.0],
+  [8.05, 947, 292, 1.07, 1.90,  0.0],
+  [9.1,  650, 216, 1.00, 1.60, -0.6],
+  [9.8,  490, 200, 1.07, 1.95,  0.0],
+  [10.8, 490, 200, 1.07, 1.95,  0.0],
+  [12.0, 690, 400, 1.00, 1.55, -10.0],
+  [13.3, 688, 392, 0.95, 1.10,  0.0],
+  [15.0, 690, 430, 1.00, 1.30,  0.0],
+];
+const kt = KEYS.map(k => k[0]);
+const fTX = pchip(kt, KEYS.map(k => k[1])), fTY = pchip(kt, KEYS.map(k => k[2])), fF = pchip(kt, KEYS.map(k => k[3]));
+const fLZ = pchip(kt, KEYS.map(k => Math.log(k[4]))), fR = pchip(kt, KEYS.map(k => k[5]));
+const SHAKES = [[4.3, 9], [4.65, 7]];
+
+function camera(t) {
+  let f = fF(t), z = Math.exp(fLZ(t)), roll = fR(t) * Math.PI / 180;
+  let tx = fTX(t), ty = fTY(t);
+  // el kamerası titreşimi (yönetmen planı dışı hafif)
+  const tr = [Math.sin(t * 1.7) + .6 * Math.sin(t * 3.9 + 1), Math.sin(t * 1.3 + 2) + .6 * Math.sin(t * 4.3)];
+  let sx = tr[0] * 1.6, sy = tr[1] * 1.3; roll += (Math.sin(t * 1.1 + .5) * .12) * Math.PI / 180;
+  for (const [t0, a] of SHAKES) { const u = t - t0; if (u > 0 && u < .7) { const e = Math.exp(-u / .11) * a;
+    sx += e * Math.sin(u * 2 * Math.PI * 23); sy += e * Math.sin(u * 2 * Math.PI * 19 + 1.3); roll += e * .02 * Math.sin(u * 2 * Math.PI * 17) * Math.PI / 180 * 10; } }
+  // en uzak katman (duvar, f=0.90) kadrajı tamamen kaplamalı
+  const fb = 0.9, eB = 1 + 0.35 * (fb - 1), cs = Math.abs(Math.cos(roll)), sn = Math.abs(Math.sin(roll));
+  const hwS = W / 2 + 6, hhS = H / 2 + 6, needW = hwS * cs + hhS * sn, needH = hwS * sn + hhS * cs;
+  const sNeed = Math.max(needW / (W / 2 - 3), needH / (H / 2 - 3));
+  z = Math.max(z, Math.pow(sNeed, 1 / eB));
+  const s = Math.pow(z, eB);
+  let c = [C0[0] + (tx - C0[0]) / f, C0[1] + (ty - C0[1]) / f];
+  let cf = [C0[0] + fb * (c[0] - C0[0]) + sx / s, C0[1] + fb * (c[1] - C0[1]) + sy / s];
+  const hw = needW / s, hh = needH / s;
+  cf[0] = clamp(cf[0], hw, W - hw); cf[1] = clamp(cf[1], hh, H - hh);
+  c = [C0[0] + (cf[0] - C0[0]) / fb, C0[1] + (cf[1] - C0[1]) / fb];
+  return { c, z, roll, focus: f };
+}
+
+// ---------- varlıklar ----------
+let LAY = {}, ASSET = {}, DOTS = {}, SPR = {}, GR = [], VIG, CAP = [];
+function loadImg(src) { return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(src); i.src = src; }); }
+function buildLevels(img, w, h, replicate) {
+  const [src, sx] = mk(w + 2 * PAD, h + 2 * PAD); sx.drawImage(img, PAD, PAD);
+  if (replicate) { sx.drawImage(img, 0, 0, 1, h, 0, PAD, PAD, h); sx.drawImage(img, w - 1, 0, 1, h, w + PAD, PAD, PAD, h);
+    sx.drawImage(src, 0, PAD, w + 2 * PAD, 1, 0, 0, w + 2 * PAD, PAD); sx.drawImage(src, 0, h + PAD - 1, w + 2 * PAD, 1, 0, h + PAD, w + 2 * PAD, PAD); }
+  return LEVELS.map(lv => { if (lv === 0) return src; const [c, x] = mk(w + 2 * PAD, h + 2 * PAD); x.filter = `blur(${lv}px)`; x.drawImage(src, 0, 0); return c; });
+}
+async function init() {
+  const meta = await (await fetch('layers/layers.json')).json();
+  const names = Object.keys(meta.layers);
+  for (const n of names) {
+    const m = meta.layers[n]; const img = await loadImg('layers/' + m.file);
+    const w = img.naturalWidth, h = img.naturalHeight;   // boyut yüklenen görselden
+    LAY[n] = { name: n, x: m.x, y: m.y, w, h, f: m.f, img, lv: n.startsWith('trail') && m.dots ? null : buildLevels(img, w, h, n === 'bg') };
+    if (m.dots) {                                           // noktalı iz: her nokta için ayrı toplamsal kanvas
+      const own = await loadImg('layers/' + m.owner);
+      const [ac, ax] = mk(w, h, true); ax.drawImage(img, 0, 0); const ad = ax.getImageData(0, 0, w, h).data;
+      const [oc, ox] = mk(w, h, true); ox.drawImage(own, 0, 0); const od = ox.getImageData(0, 0, w, h).data;
+      DOTS[n] = m.dots.map((d, j) => { const [c, x] = mk(d.w, d.h, true); const id = x.createImageData(d.w, d.h);
+        for (let yy = 0; yy < d.h; yy++) for (let xx = 0; xx < d.w; xx++) { const sx = d.x + xx, sy = d.y + yy, si = (sy * w + sx) * 4;
+          if (od[si] === j + 1) { const di = (yy * d.w + xx) * 4; id.data[di] = ad[si]; id.data[di + 1] = ad[si + 1]; id.data[di + 2] = ad[si + 2]; id.data[di + 3] = 255; } }
+        x.putImageData(id, 0, 0); return { c, ox: m.x + d.x, oy: m.y + d.y, w: d.w, h: d.h, cx: m.x + d.x + d.w / 2, cy: m.y + d.y + d.h / 2 }; });
+    }
+  }
+  // lamba / anahtar varyantları
+  { const L = LAY.lamp; const [c, x] = mk(L.w, L.h); x.drawImage(L.img, 0, 0); x.globalCompositeOperation = 'source-atop'; x.fillStyle = 'rgba(38,42,66,0.82)'; x.fillRect(0, 0, L.w, L.h); ASSET.lampOff = c; }
+  { const L = LAY.switch; const [c, x] = mk(L.w, L.h); x.translate(0, L.h); x.scale(1, -1); x.drawImage(L.img, 0, 0); ASSET.swOff = c; }
+  // parıltı sprite'ı
+  { const [c, x] = mk(128, 128); const g = x.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(.25, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, 128, 128); SPR.glow = c; }
+  { const [c, x] = mk(128, 128); const g = x.createRadialGradient(64, 64, 0, 64, 64, 64); g.addColorStop(0, 'rgba(255,255,255,.7)'); g.addColorStop(.7, 'rgba(255,255,255,.35)'); g.addColorStop(1, 'rgba(255,255,255,0)'); x.fillStyle = g; x.fillRect(0, 0, 128, 128); SPR.bokeh = c; }
+  // gren kareleri ve vinyet
+  for (let k = 0; k < 4; k++) { const [c, x] = mk(512, 512, true); const id = x.createImageData(512, 512);
+    for (let i = 0; i < 512 * 512; i++) { const v = 128 + (hash(i + k * 99991) - .5) * 160; id.data[i * 4] = id.data[i * 4 + 1] = id.data[i * 4 + 2] = v; id.data[i * 4 + 3] = 255; } x.putImageData(id, 0, 0); GR.push(c); }
+  { const [c, x] = mk(W, H); const g = x.createRadialGradient(W / 2, H / 2, H * .42, W / 2, H / 2, W * .62); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.55)'); x.fillStyle = g; x.fillRect(0, 0, W, H); VIG = c; }
+  // pivotlar: küçük iz noktası merkezi
+  for (const k of ['1', '2', '3']) { const d = LAY['trail' + k]; BUB[k].pivot = [d.x + d.w / 2, d.y + d.h / 2]; }
+  // parçacıklar
+  RAIN = Array.from({ length: 70 }, (_, i) => ({ x: 1012 + hash(i * 3.1) * 80, p: hash(i * 7.7), v: .9 + hash(i * 1.9) * .9, len: 7 + hash(i * 5.3) * 8, t0: 6.6 + hash(i * 2.3) * 1.2 }));
+  DUST = Array.from({ length: 46 }, (_, i) => ({ x: hash(i * 1.37) * 2600 - 600, y: hash(i * 2.71) * 1500 - 350, vx: (hash(i * 9.1) - .5) * 14, vy: -3 - hash(i * 4.4) * 7, r: 7 + hash(i * 6.6) * 16, a: .07 + hash(i * 8.8) * .15 }));
+  for (const [a, b, txt] of CAPTIONS) CAP.push({ a, b, words: txt.split(' ') });
+}
+let RAIN = [], DUST = [];
+const CAPTIONS = [
+  [0.5, 2.9, 'Gece. Oda sessiz… ama zihin henüz kapanmadı.'],
+  [3.5, 5.4, 'Önce, bugünden yarım kalanlar.'],
+  [6.5, 8.2, 'Sonra yarın. Henüz yaşanmamış olanın ağırlığı.'],
+  [9.4, 10.9, 'Ve çok eskilerden bir pişmanlık.'],
+  [11.2, 13.0, 'Dün, bugün, yarın… aynı küçük odada.'],
+  [13.45, 14.85, 'Işığı kapat. Yarın, yarının işi.'],
+];
+
+// ---------- olay zaman çizelgesi ----------
+const BUB = { '1': { dot: 3.0, open: 3.12, vanish: 13.89 }, '2': { dot: 6.38, open: 6.5, vanish: 13.72 }, '3': { dot: 9.15, open: 9.3, vanish: 13.55 } };
+const PILL = { '1': 3.55, '2': 6.85, '3': 9.8 };
+const VAN = .18;
+const lampL = t => { const p = [[13.2, 1], [13.25, 1], [13.30, .35], [13.36, .95], [13.43, .2], [13.50, .7], [13.58, .1], [13.66, .45], [13.74, 0]];
+  if (t <= p[0][0]) return 1; if (t >= 13.74) return 0; for (let i = 0; i < p.length - 1; i++) if (t < p[i + 1][0]) return lerp(p[i][1], p[i + 1][1], (t - p[i][0]) / (p[i + 1][0] - p[i][0])); return 0; };
+function vanishK(k, t) { return clamp((t - BUB[k].vanish) / VAN); }
+function bubState(k, t) {           // balon gövdesi
+  const b = BUB[k]; if (t < b.open) return null;
+  const u = (t - b.open) / .45; let sc = Math.max(0.001, eOutBack(u, 2.4)), a = clamp(u * 8), blur = 0, rot = 0, dx = 0, dy = 0;
+  if (k === '3') blur = 6 * (1 - eOutCubic((t - b.open) / .6));
+  const amp = .006 + .011 * sstep(10.6, 11.2, t) * (1 - sstep(13.0, 13.4, t));
+  const w = 2 * Math.PI / 2.4; sc *= 1 + amp * Math.sin(w * (t - 1.0) + (k === '1' ? 0 : 0));
+  if (k === '2' && t > 6.95 && t < 8.3) { const e = sstep(6.95, 7.15, t) * (1 - sstep(8.1, 8.3, t)); dx = e * 2.2 * Math.sin(t * 61); dy = e * 1.6 * Math.sin(t * 53 + 1); rot = e * .007 * Math.sin(t * 47); }
+  const v = vanishK(k, t); if (v > 0) { sc *= Math.max(0, 1 - v * v); a *= 1 - v; }
+  return { sc, a, blur, rot, dx, dy };
+}
+function dotState(k, t) {
+  const b = BUB[k]; if (t < b.dot) return null; const u = (t - b.dot) / .3;
+  let sc = u < 1 ? eOutBack(u, 3) : 1; const v = vanishK(k, t); return { sc: Math.max(0.001, sc) * (1 - v), a: clamp(u * 6) * (1 - v) };
+}
+function pillState(k, t) {
+  const t0 = PILL[k]; if (t < t0) return null; const u = t - t0; let dx = 0, dy = 0, sc = 1, a = 1, blur = 0;
+  if (k === '1') { const e = eOutCubic(u / .5); dx = 170 * (1 - e); a = clamp(u / .18); }
+  if (k === '2') { const e = eOutBounce(u / .7); dy = -230 * (1 - e); a = clamp(u / .08); }
+  if (k === '3') { const e = eOutCubic(u / .55); blur = 6 * (1 - e); sc = 1.05 - .05 * e; a = clamp(u / .4); }
+  const v = vanishK(k, t); if (v > 0) { a *= 1 - v; sc *= 1 - .4 * v; }
+  return { dx, dy, sc, a, blur };
+}
+
+// ---------- çizim ----------
+function setCam(ctx, cam, f) {
+  const s = Math.pow(cam.z, 1 + 0.35 * (f - 1)), cx = C0[0] + f * (cam.c[0] - C0[0]), cy = C0[1] + f * (cam.c[1] - C0[1]);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.translate(W / 2, H / 2); ctx.rotate(cam.roll); ctx.scale(s, s); ctx.translate(-cx, -cy); return s;
+}
+function local(ctx, pv, st) { ctx.translate(pv[0] + (st.dx || 0), pv[1] + (st.dy || 0)); if (st.rot) ctx.rotate(st.rot); ctx.scale(st.sx || st.sc, st.sy || st.sc); ctx.translate(-pv[0], -pv[1]); }
+function drawLayer(ctx, cam, lay, o = {}) {
+  const a = o.alpha === undefined ? 1 : o.alpha; if (a <= 0.004) return;
+  ctx.save(); const s = setCam(ctx, cam, lay.f); if (o.local) o.local(ctx);
+  ctx.globalCompositeOperation = o.comp || 'source-over';
+  let b = o.blur !== undefined ? o.blur : DOF_K * Math.abs(lay.f - cam.focus); b = clamp(b + (o.extra || 0), 0, 6);
+  let i = 0; while (i < LEVELS.length - 2 && b >= LEVELS[i + 1]) i++;
+  const w = clamp((b - LEVELS[i]) / (LEVELS[i + 1] - LEVELS[i]));
+  const img = o.img ? null : lay.lv;
+  if (o.img) { ctx.globalAlpha = a; ctx.drawImage(o.img, lay.x, lay.y); }
+  else { ctx.globalAlpha = a; ctx.drawImage(img[i], lay.x - PAD, lay.y - PAD); if (w > .02) { ctx.globalAlpha = a * w; ctx.drawImage(img[i + 1], lay.x - PAD, lay.y - PAD); } }
+  ctx.restore();
+}
+function glowAt(ctx, cam, f, x, y, r, col, a) {          // toplamsal parıltı (orijinal koordinatlarda)
+  if (a <= .004) return; ctx.save(); setCam(ctx, cam, f); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = a;
+  const tc = SPR.tintCache || (SPR.tintCache = {}); const key = col.join(',');
+  if (!tc[key]) { const [cc, xx] = mk(128, 128); xx.drawImage(SPR.glow, 0, 0); xx.globalCompositeOperation = 'source-in'; xx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`; xx.fillRect(0, 0, 128, 128); tc[key] = cc; }
+  ctx.drawImage(tc[key], x - r, y - r, 2 * r, 2 * r); ctx.restore();
+}
+
+function drawDots(ctx, cam, name, t, times, vanishT, pulseIdx0) {
+  const arr = DOTS[name];
+  for (let i = 0; i < arr.length; i++) {
+    const d = arr[i], rt = times[i]; if (t < rt) continue;
+    const u = (t - rt) / .22; let sc = u < 1 ? 1 + .9 * (1 - eOutCubic(u)) : 1, a = clamp(u * 4);
+    const v = clamp((t - vanishT) / VAN); a *= 1 - v; sc *= 1 - .5 * v;
+    // ışık akışı (11.2–12.5): A çizgisi sonra B çizgisi boyunca
+    const p = (t - 11.2) / 1.3 * 24 - 2, gi = pulseIdx0 + i, g = 1 + 2.4 * Math.exp(-Math.pow((gi - p) / 1.7, 2)) * (t > 11.1 && t < 12.9 ? 1 : 0);
+    if (a <= .01) continue;
+    ctx.save(); setCam(ctx, cam, 1.0); ctx.globalCompositeOperation = 'lighter';
+    ctx.translate(d.cx, d.cy); ctx.scale(sc, sc); ctx.translate(-d.cx, -d.cy);
+    let rem = g; while (rem > 0.02) { ctx.globalAlpha = a * Math.min(1, rem); ctx.drawImage(d.c, d.ox, d.oy); rem -= 1; }
+    if (g > 1.5) { ctx.globalAlpha = a * (g - 1.5) * .25; ctx.drawImage(SPR.glow, d.cx - 14, d.cy - 14, 28, 28); }
+    ctx.restore();
+  }
+}
+const timesA = () => { const n = DOTS.trailA.length; return Array.from({ length: n }, (_, i) => 5.3 + (1.0 * i) / (n - 1)); };   // aşağıdan yukarı
+const timesB = () => { const n = DOTS.trailB.length; return Array.from({ length: n }, (_, i) => 8.05 + (0.95 * i) / (n - 1)); };  // sağdan sola
+
+function drawScene(ctx, t) {
+  const cam = camera(t);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'medium';
+  const Lr = lampL(t);
+  drawLayer(ctx, cam, LAY.bg);
+  glowAt(ctx, cam, .92, 688, 14, 330, [255, 196, 110], .34 * Lr);
+  // lamba: yanık / sönük varyant
+  drawLayer(ctx, cam, LAY.lamp, { img: ASSET.lampOff, blur: 0 });
+  drawLayer(ctx, cam, LAY.lamp, { alpha: Lr });
+  { const press = t > 13.15 && t < 13.35 ? 1 - .06 * Math.sin((t - 13.15) / .2 * Math.PI) : 1; const off = t >= 13.22;
+    drawLayer(ctx, cam, LAY.switch, off ? { img: ASSET.swOff, blur: 0, local: c => { c.translate(1172, 268); c.scale(press, press); c.translate(-1172, -268); } }
+      : { local: c => { c.translate(1172, 268); c.scale(press, press); c.translate(-1172, -268); } });
+    if (t > 13.18 && t < 13.55) glowAt(ctx, cam, .92, 1172, 268, 26 + 40 * (t - 13.18), [255, 255, 255], .55 * (1 - (t - 13.18) / .37)); }
+  drawLayer(ctx, cam, LAY.shadow);
+  // noktalı çizgiler (bubble1→2 = A, bubble2→3 = B)
+  drawDots(ctx, cam, 'trailA', t, timesA(), BUB['2'].vanish, 0);
+  drawDots(ctx, cam, 'trailB', t, timesB(), BUB['3'].vanish, DOTS.trailA.length);
+  drawLayer(ctx, cam, LAY.bed);
+  // etiketler (balonların altında)
+  for (const k of ['3', '2', '1']) { const s = pillState(k, t); if (!s) continue; const L = LAY['pill' + k], pv = [L.x + L.w / 2, L.y + L.h / 2];
+    drawLayer(ctx, cam, L, { alpha: s.a, extra: s.blur, local: c => local(c, pv, { dx: s.dx, dy: s.dy, sc: s.sc }) }); }
+  // balonlar
+  for (const k of ['3', '2', '1']) {
+    const pv = BUB[k].pivot; const d = dotState(k, t); if (d) drawLayer(ctx, cam, LAY['trail' + k], { alpha: d.a, local: c => { const L = LAY['trail' + k], q = [L.x + L.w / 2, L.y + L.h / 2]; local(c, q, { sc: d.sc }); } });
+    const s = bubState(k, t); if (!s) continue;
+    drawLayer(ctx, cam, LAY['bubble' + k], { alpha: s.a, extra: s.blur, local: c => local(c, pv, s) });
+    if (k === '2') drawRain(ctx, cam, t, s, pv);
+    if (k === '1') for (const tt of [4.3, 4.65]) { const u = t - tt; if (u > 0 && u < .6) { const e = Math.exp(-u / .13) * (u < .05 ? u / .05 : 1);
+      glowAt(ctx, cam, 1.07, 1073 + s.dx, 566 + s.dy, 70, [255, 50, 40], .95 * e * s.a); glowAt(ctx, cam, 1.07, 1073, 566, 120, [255, 90, 70], .35 * e * s.a); } }
+  }
+  // karakter (nefes)
+  { const br = Math.sin(t * 2 * Math.PI / 3.4), pv = [687, 705]; const op = sstep(.2, 1.0, t);
+    drawLayer(ctx, cam, LAY.character, { alpha: 1, local: c => local(c, pv, { sx: 1 - .004 * br, sy: 1 + .011 * br }) });
+    // ışık kıvılcımları
+    for (let i = 0; i < 3; i++) { const t0 = 2.1 + .25 * i, u = (t - t0) / .62; if (u < 0 || u > 1) continue; const e = eOutCubic(u), a = Math.sin(Math.PI * Math.min(1, u * 1.15));
+      const x = 690 + (i - 1) * 26 + Math.sin(u * 9 + i * 2) * 7, y = 338 - 82 * e - i * 5;
+      glowAt(ctx, cam, 1.07, x, y, 16 - 8 * u, [255, 236, 170], .95 * a); glowAt(ctx, cam, 1.07, x, y, 40, [255, 215, 120], .28 * a); } }
+  // toz parçacıkları (f=1.28)
+  { const f = 1.28; ctx.save(); setCam(ctx, cam, f); ctx.globalCompositeOperation = 'lighter';
+    const fade = sstep(.3, 1.4, t) * (1 - .75 * sstep(13.2, 13.8, t));
+    for (const p of DUST) { const x = ((p.x + p.vx * t) % 2600 + 2600) % 2600 - 600, y = ((p.y + p.vy * t) % 1500 + 1500) % 1500 - 350;
+      ctx.globalAlpha = p.a * fade * (.75 + .25 * Math.sin(t * 1.3 + p.x)); ctx.drawImage(SPR.bokeh, x - p.r, y - p.r, 2 * p.r, 2 * p.r); }
+    ctx.restore(); }
+  // renk tonları
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  const cool = sstep(6.45, 7.2, t) * (1 - sstep(8.3, 9.1, t)), sep = sstep(9.15, 9.8, t) * (1 - sstep(10.8, 11.7, t));
+  if (cool > .01) { ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = cool; ctx.fillStyle = 'rgb(196,222,255)'; ctx.fillRect(0, 0, W, H); }
+  if (sep > .01) { ctx.globalCompositeOperation = 'saturation'; ctx.globalAlpha = sep * .85; ctx.fillStyle = '#808080'; ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = sep; ctx.fillStyle = 'rgb(255,226,186)'; ctx.fillRect(0, 0, W, H); }
+  const night = (1 - Lr) * .9;
+  if (night > .01) { ctx.globalCompositeOperation = 'multiply'; ctx.globalAlpha = night; ctx.fillStyle = 'rgb(38,58,120)'; ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = night; ctx.fillStyle = 'rgb(7,12,30)'; ctx.fillRect(0, 0, W, H); }
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+}
+function drawRain(ctx, cam, t, s, pv) {
+  const vis = sstep(6.6, 7.0, t) * (1 - vanishK('2', t)); if (vis < .02) return;
+  ctx.save(); setCam(ctx, cam, 1.07); local(ctx, pv, s);
+  ctx.beginPath(); ctx.ellipse(947, 297, 163, 101, 0, 0, Math.PI * 2); ctx.clip();
+  ctx.strokeStyle = 'rgba(120,170,235,.9)'; ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  for (const d of RAIN) { if (t < d.t0) continue; const ph = ((t - d.t0) * d.v * .9 + d.p) % 1, y = 262 + ph * 80;
+    ctx.globalAlpha = vis * Math.sin(Math.PI * ph) * .9; ctx.beginPath(); ctx.moveTo(d.x, y); ctx.lineTo(d.x - 1.4, y + d.len); ctx.stroke(); }
+  ctx.restore();
+}
+
+// ---------- son katman: altyazı, gren, vinyet, siyah ----------
+function post(ctx, t, n) {
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(VIG, 0, 0);
+  // altyazı
+  for (const c of CAP) { if (t < c.a || t > c.b + .05) continue;
+    const dur = c.b - c.a, reveal = dur * .72, nw = c.words.length, fo = 1 - sstep(c.b - .28, c.b, t);
+    ctx.font = '700 35px "Liberation Sans","DejaVu Sans",Arial,sans-serif'; ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+    const sp = ctx.measureText(' ').width, ws = c.words.map(w => ctx.measureText(w).width), total = ws.reduce((a, b) => a + b, 0) + sp * (nw - 1);
+    // alt koyu zemin
+    ctx.globalAlpha = .5 * fo * sstep(c.a, c.a + .2, t); const g = ctx.createLinearGradient(0, H - 150, 0, H); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.85)'); ctx.fillStyle = g; ctx.fillRect(0, H - 150, W, 150);
+    let x = (W - total) / 2;
+    for (let i = 0; i < nw; i++) { const tw = c.a + reveal * i / nw, u = clamp((t - tw) / .16);
+      if (u > 0) { ctx.globalAlpha = u * fo; const y = H - 62 + (1 - u) * 8; ctx.shadowColor = 'rgba(0,0,0,.85)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 2; ctx.fillStyle = '#fff6e6'; ctx.fillText(c.words[i], x, y); ctx.shadowBlur = 0; ctx.shadowOffsetY = 0; }
+      x += ws[i] + sp; }
+  }
+  // gren
+  ctx.globalCompositeOperation = 'overlay'; ctx.globalAlpha = .14;
+  const gc = GR[n % 4], ox = Math.floor(hash(n * 1.7) * 512), oy = Math.floor(hash(n * 2.9) * 512);
+  for (let yy = -oy; yy < H; yy += 512) for (let xx = -ox; xx < W; xx += 512) ctx.drawImage(gc, xx, yy);
+  ctx.globalCompositeOperation = 'source-over';
+  // siyah geçişler
+  const fade = Math.max(1 - sstep(0, .8, t), sstep(14.35, 15.0, t));
+  if (fade > .002) { ctx.globalAlpha = fade; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }
+  ctx.globalAlpha = 1;
+}
+
+// ---------- kare üretimi (10 alt kare, 180° obtüratör) ----------
+const [out, octx] = [document.getElementById('out'), document.getElementById('out').getContext('2d', { willReadFrequently: true })];
+const [sc, sctx] = mk(W, H, true);
+let acc = null, outImg = null;
+function renderFrame(n, nsub = NSUB) {
+  const t0 = n / FPS; acc = acc || new Uint32Array(W * H * 4); acc.fill(0);
+  for (let k = 0; k < nsub; k++) {
+    const t = t0 + ((k + .5) / nsub - .5) * (0.5 / FPS);
+    drawScene(sctx, Math.max(0, t)); const d = sctx.getImageData(0, 0, W, H).data;
+    for (let i = 0; i < d.length; i++) acc[i] += d[i];
+  }
+  outImg = outImg || octx.createImageData(W, H); const o = outImg.data;
+  for (let i = 0; i < o.length; i += 4) { o[i] = acc[i] / nsub + .5; o[i + 1] = acc[i + 1] / nsub + .5; o[i + 2] = acc[i + 2] / nsub + .5; o[i + 3] = 255; }
+  octx.putImageData(outImg, 0, 0); post(octx, t0, n);
+  return out.toDataURL('image/jpeg', 0.93).split(',')[1];
+}
+window.renderFrame = renderFrame;
+window.ready = init().then(() => { window.__ok = true; if (!RENDER) { let n = 0; const loop = () => { renderFrame(n % (FPS * DUR), 1); n++; requestAnimationFrame(loop); }; loop(); } });
+</script></body></html>
